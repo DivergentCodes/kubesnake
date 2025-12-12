@@ -223,6 +223,21 @@ terraform.rc
 *.vsix
 
 
+
+###########################################################
+# Prettier
+###########################################################
+
+# Explicitly keep formatting files
+!.prettierrc
+!.eslintrc
+!.editorconfig
+
+# Ignore cache files
+.prettier-cache
+.eslintcache
+
+
 ###########################################################
 # Vim
 ###########################################################
