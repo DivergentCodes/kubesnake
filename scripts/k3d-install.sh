@@ -65,6 +65,16 @@ scurl() {
   curl --proto "=https" --tlsv1.2 --fail --show-error "$@"
 }
 
+# swget invokes `wget` with secure defaults (mirrors scurl security settings)
+swget() {
+  # - `--secure-protocol=TLSv1_2` ensures at least TLS v1.2 is used
+  # - `--https-only` requires HTTPS URLs only
+  if [[ "$DEBUG" == "true" ]]; then
+    echo "Executing: wget --secure-protocol=TLSv1_2 --https-only $*" >&2
+  fi
+  wget --secure-protocol=TLSv1_2 --https-only "$@"
+}
+
 # verifySupported checks that the os/arch combination is supported for
 # binary builds.
 verifySupported() {
@@ -109,7 +119,7 @@ checkLatestVersion() {
   if type "curl" > /dev/null; then
     TAG=$(scurl -Ls -o /dev/null -w %{url_effective} $latest_release_url | grep -oE "[^/]+$" )
   elif type "wget" > /dev/null; then
-    TAG=$(wget $latest_release_url --server-response -O /dev/null 2>&1 | awk '/^\s*Location: /{DEST=$2} END{ print DEST}' | grep -oE "[^/]+$")
+    TAG=$(swget --server-response -O /dev/null "$latest_release_url" 2>&1 | awk '/^\s*Location: /{DEST=$2} END{ print DEST}' | grep -oE "[^/]+$")
   fi
   if [[ "$DEBUG" == "true" ]]; then
     echo "Resolved latest tag: <$TAG>" >&2
@@ -125,20 +135,57 @@ checkLatestVersion() {
 downloadFile() {
   K3D_DIST="k3d-$OS-$ARCH"
   DOWNLOAD_URL="$REPO_URL/releases/download/$TAG/$K3D_DIST"
+  CHECKSUM_URL="$REPO_URL/releases/download/$TAG/sha256sum.txt"
   if [[ "$OS" == "windows" ]]; then
     DOWNLOAD_URL=${DOWNLOAD_URL}.exe
+    K3D_DIST="${K3D_DIST}.exe"
   fi
   K3D_TMP_ROOT="$(mktemp -dt k3d-binary-XXXXXX)"
   K3D_TMP_FILE="$K3D_TMP_ROOT/$K3D_DIST"
+  K3D_SUM_FILE="$K3D_TMP_ROOT/sha256sum.txt"
+
+  echo "Downloading $APP_NAME from $DOWNLOAD_URL"
   if type "curl" > /dev/null; then
     scurl -sL "$DOWNLOAD_URL" -o "$K3D_TMP_FILE"
+    scurl -sL "$CHECKSUM_URL" -o "$K3D_SUM_FILE"
   elif type "wget" > /dev/null; then
-    wget -q -O "$K3D_TMP_FILE" "$DOWNLOAD_URL"
+    swget -q -O "$K3D_TMP_FILE" "$DOWNLOAD_URL"
+    swget -q -O "$K3D_SUM_FILE" "$CHECKSUM_URL"
   fi
 }
 
-# installFile verifies the SHA256 for the file, then unpacks and
-# installs it.
+# verifyChecksum verifies the SHA256 checksum of the downloaded binary
+verifyChecksum() {
+  echo "Verifying SHA256 checksum..."
+  local expected_sum
+  expected_sum=$(grep "${K3D_DIST}$" "$K3D_SUM_FILE" | awk '{print $1}')
+
+  if [[ -z "$expected_sum" ]]; then
+    echo "ERROR: Could not find checksum for $K3D_DIST in $K3D_SUM_FILE"
+    exit 1
+  fi
+
+  local actual_sum
+  if command -v sha256sum > /dev/null; then
+    actual_sum=$(sha256sum "$K3D_TMP_FILE" | awk '{print $1}')
+  elif command -v shasum > /dev/null; then
+    actual_sum=$(shasum -a 256 "$K3D_TMP_FILE" | awk '{print $1}')
+  else
+    echo "ERROR: No SHA256 tool found (need sha256sum or shasum)"
+    exit 1
+  fi
+
+  if [[ "$expected_sum" != "$actual_sum" ]]; then
+    echo "ERROR: SHA256 checksum verification failed!"
+    echo "  Expected: $expected_sum"
+    echo "  Actual:   $actual_sum"
+    exit 1
+  fi
+
+  echo "SHA256 checksum verified successfully."
+}
+
+# installFile installs the downloaded binary after checksum verification.
 installFile() {
   echo "Preparing to install $APP_NAME into ${K3D_INSTALL_DIR}"
   runAsRoot chmod +x "$K3D_TMP_FILE"
@@ -216,6 +263,7 @@ verifySupported
 checkTagProvided || checkLatestVersion
 if ! checkK3dInstalledVersion; then
   downloadFile
+  verifyChecksum
   installFile
 fi
 testVersion
