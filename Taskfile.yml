@@ -1,0 +1,48 @@
+version: "3"
+
+variables:
+  IMAGE_TAG: "kubesnake:dev"
+  K3D_CLUSTER_NAME: "kubesnake-dev"
+  KUBECONFIG_CONTEXT: "k3d-{{.K3D_CLUSTER_NAME}}"
+
+tasks:
+  up:
+    desc: Basic cluster is running and ready
+    vars:
+      START_TIME:
+        sh: date +%s
+    cmds:
+      - task: k3d:create
+      - task: k3d:kubeconfig
+      - kubectl get nodes
+      - echo "✓ Cluster ready in $(($(date +%s) - {{.START_TIME}}))s"
+
+  down:
+    desc: Delete the cluster
+    cmds:
+      - task k3d:delete
+
+  k3d:install:
+    desc: Install k3d
+    cmds:
+      - ./scripts/k3d-install.sh
+
+  k3d:create:
+    desc: Create a k3s test cluster for KubeSnake
+    cmds:
+      - k3d cluster create {{.K3D_CLUSTER_NAME}}
+        --servers 1
+        --agents 2
+        --api-port 6443
+        --k3s-arg '--disable=traefik@server:*'
+        --k3s-arg '--disable=servicelb@server:*'
+
+  k3d:delete:
+    desc: Delete the dev cluster
+    cmds:
+      - k3d cluster delete {{.K3D_CLUSTER_NAME}}
+
+  k3d:kubeconfig:
+    desc: Export kubeconfig for this cluster
+    cmds:
+      - k3d kubeconfig merge {{.K3D_CLUSTER_NAME}} --kubeconfig-switch-context
