@@ -1,4 +1,34 @@
 ###########################################################
+# Project-specific
+###########################################################
+
+# Embedded CA certificates copied at build time
+internal/certs/ca-certificates.crt
+
+##########################################################
+# Golang
+###########################################################
+
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+
+# Dependency directories (remove the comment below to include it)
+vendor/
+
+# Build output directory
+bin/
+
+###########################################################
 # Python
 ###########################################################
 
@@ -12,7 +42,6 @@ __pycache__/
 
 # Distribution / packaging
 .Python
-build/
 develop-eggs/
 dist/
 downloads/
@@ -133,27 +162,6 @@ dmypy.json
 .pyre/
 
 
-##########################################################
-# Golang
-###########################################################
-
-# Binaries for programs and plugins
-*.exe
-*.exe~
-*.dll
-*.so
-*.dylib
-
-# Test binary, built with `go test -c`
-*.test
-
-# Output of the go coverage tool, specifically when used with LiteIDE
-*.out
-
-# Dependency directories (remove the comment below to include it)
-vendor/
-
-
 ###########################################################
 # Terraform
 ###########################################################
@@ -245,7 +253,6 @@ terraform.rc
 .*.un~
 *.swo
 *.swp
-
 
 ###########################################################
 # Other
