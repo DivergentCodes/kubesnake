@@ -12,9 +12,9 @@ tasks:
   ##########################################################
 
   build:
-    desc: Build the kubesnake binary
+    desc: Build kubesnake for all platforms (linux/amd64, linux/arm64)
     cmds:
-      - ./scripts/build.sh
+      - ./scripts/build.sh all
 
   build:docker:
     desc: Build the Docker image
@@ -22,9 +22,28 @@ tasks:
       - docker build -t {{.IMAGE_TAG}} -f build/package/Dockerfile .
 
   test:
+    desc: Run all tests
+    cmds:
+      - task: test:unit
+      - task: test:e2e
+
+  test:unit:
     desc: Run tests
     cmds:
       - go test -v ./...
+
+  test:e2e:
+    desc: Run all e2e test scenarios (parallel)
+    vars:
+      PARALLEL_SUITES: 4
+    deps: [build]
+    cmds:
+      - time go test -count=1 -tags e2e -v -p {{.PARALLEL_SUITES}} ./test/...
+
+  test:e2e:serial:
+    desc: Run all e2e test scenarios (serial)
+    cmds:
+      - time go test -count=1 -tags e2e -v -p 1 ./test/...
 
   lint:
     desc: Run linters
@@ -44,7 +63,7 @@ tasks:
   clean:
     desc: Clean build artifacts
     cmds:
-      - rm -rf bin/
+      - rm -rf dist/
 
   ##########################################################
   # Cluster Tasks
@@ -59,7 +78,7 @@ tasks:
       - task: k3d:create
       - task: k3d:kubeconfig
       - kubectl get nodes
-      - echo "✓ Cluster ready in $(($(date +%s) - {{.START_TIME}}))s"
+      - echo "Cluster ready in $(($(date +%s) - {{.START_TIME}}))s"
 
   down:
     desc: Delete the cluster
@@ -90,3 +109,13 @@ tasks:
     desc: Export kubeconfig for this cluster
     cmds:
       - k3d kubeconfig merge {{.K3D_CLUSTER_NAME}} --kubeconfig-switch-context
+
+  k3d:useconfig:
+    desc: Use the kubeconfig for this cluster
+    cmds:
+      - kubectl config use-context {{.KUBECONFIG_CONTEXT}}
+
+  k3d:loadimage:
+    desc: Load local kubesnake:dev image into the dev cluster
+    cmds:
+      - k3d image import {{.IMAGE_TAG}} -c {{.K3D_CLUSTER_NAME}}

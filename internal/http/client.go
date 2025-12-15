@@ -27,4 +27,3 @@ func NewClient() (*Client, error) {
 		},
 	}, nil
 }
-

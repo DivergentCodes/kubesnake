@@ -1,0 +1,59 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: target-pod-sa
+  namespace: default
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: target-pod-beacons
+  namespace: default
+data:
+  app.beacon.json: |
+    {"v":1,"namespace":"default","pod":"target-pod","container":"app","pod_uid":"","beacon_id":"default/target-pod:app"}
+  sidecar.beacon.json: |
+    {"v":1,"namespace":"default","pod":"target-pod","container":"sidecar","pod_uid":"","beacon_id":"default/target-pod:sidecar"}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: target-pod
+  namespace: default
+  labels:
+    app: target-pod
+spec:
+  restartPolicy: Always
+  volumes:
+    - name: beacons
+      configMap:
+        name: target-pod-beacons
+
+  containers:
+    - name: app
+      image: ubuntu:24.04@sha256:c35e29c9450151419d9448b0fd75374fec4fff364a27f176fb458d472dfc9e54
+      command:
+        - sleep
+        - infinity
+      env:
+        - name: KUBESNAKE_E2E_BEACON_URL
+          value: "http://host.docker.internal:18080/beacon"
+      volumeMounts:
+        - name: beacons
+          mountPath: /var/run/kubesnake/beacon.json
+          subPath: app.beacon.json
+          readOnly: true
+
+    - name: sidecar
+      image: debian:bookworm-slim@sha256:e899040a73d36e2b36fa33216943539d9957cba8172b858097c2cabcdb20a3e2
+      command:
+        - sleep
+        - infinity
+      env:
+        - name: KUBESNAKE_E2E_BEACON_URL
+          value: "http://host.docker.internal:18080/beacon"
+      volumeMounts:
+        - name: beacons
+          mountPath: /var/run/kubesnake/beacon.json
+          subPath: sidecar.beacon.json
+          readOnly: true
