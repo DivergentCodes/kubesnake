@@ -2,14 +2,20 @@
 set -e
 
 BINARY_NAME="kubesnake"
+VERSION="${VERSION:-dev}"
 
 # POSIX-safe way to get script directory
 SCRIPTS_PATH=$(cd "$(dirname "$0")" && pwd)
 PROJECT_ROOT=$(dirname "$SCRIPTS_PATH")
 
+# Embedded CA certificates
 CERT_REL_PATH="internal/certs"
 CERT_PATH="$PROJECT_ROOT/$CERT_REL_PATH"
 
+# Platforms to cross-compile for (GOOS/GOARCH)
+PLATFORMS="linux/amd64 linux/arm64"
+
+# Copy embedded CA certificates to the project root
 copy_certs() {
     mkdir -p "$CERT_PATH"
 
@@ -27,11 +33,17 @@ copy_certs() {
     echo "Copied CA certificates to $CERT_REL_PATH/"
 }
 
+# Build a single binary for a specific platform.
+# Usage: build [goos] [goarch] [outfile]
+# Defaults: goos=linux, goarch=amd64, outfile=$PROJECT_ROOT/dist/$BINARY_NAME
 build() {
-    outfile="$PROJECT_ROOT/bin/$BINARY_NAME"
+    goos="${1:-linux}"
+    goarch="${2:-amd64}"
+    outfile="${3:-$PROJECT_ROOT/dist/$BINARY_NAME}"
     mkdir -p "$(dirname "$outfile")"
 
-    CGO_ENABLED=0 GOOS=linux go build \
+    CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build \
+        -ldflags "-X main.Version=$VERSION" \
         -o "$outfile" \
         ./cmd/kubesnake \
         || {
@@ -39,8 +51,30 @@ build() {
             exit 1
         }
 
-    echo "Built $outfile"
+    echo "Built $outfile ($goos/$goarch)"
 }
 
-copy_certs
-build
+# Build binaries for all platforms
+build_all() {
+    for platform in $PLATFORMS; do
+        goos="${platform%/*}"
+        goarch="${platform#*/}"
+        outfile="$PROJECT_ROOT/dist/${BINARY_NAME}-${goos}-${goarch}"
+        build "$goos" "$goarch" "$outfile"
+    done
+}
+
+main() {
+    copy_certs
+
+    case "${1:-}" in
+        all)
+            build_all
+            ;;
+        *)
+            build
+            ;;
+    esac
+}
+# Main
+main "$@"
