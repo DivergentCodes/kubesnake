@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Task
+        uses: go-task/setup-task@v1
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Install k3d
+        run: |
+          set -euo pipefail
+          K3D_VERSION=v5.8.3
+          curl -fsSL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=${K3D_VERSION} bash
+
+      - name: Prepare embedded CA certificates
+        run: ./scripts/copy-certs.sh
+
+      - name: Lint
+        run: task lint
+
+      - name: Build
+        run: task build
+
+      - name: Build Docker image
+        run: task build:docker
+
+      - name: Run e2e tests
+        run: task test:e2e

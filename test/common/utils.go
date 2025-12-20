@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -209,6 +210,133 @@ func CopyKubesnakeBinaryFunc(namespace, pod, container, remotePath string) env.F
 	}
 }
 
+// k3dNetworkGatewayIP returns the Docker network gateway IP for the k3d cluster network.
+func k3dNetworkGatewayIP(clusterName string) (string, error) {
+	networkName := fmt.Sprintf("k3d-%s", clusterName)
+	cmd := exec.Command("docker", "network", "inspect", networkName, "-f", "{{(index .IPAM.Config 0).Gateway}}")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("inspect k3d network: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+
+	gateway := strings.TrimSpace(string(output))
+	if gateway == "" {
+		return "", fmt.Errorf("inspect k3d network: empty gateway for %s", networkName)
+	}
+
+	return gateway, nil
+}
+
+// detectBeaconHostIP returns the preferred host IP to advertise to pods.
+// Priority: explicit override (KUBESNAKE_E2E_BEACON_IP) > primary host interface IP > k3d gateway.
+func detectBeaconHostIP(ctx context.Context, clusterName string) (string, error) {
+	if override := strings.TrimSpace(os.Getenv("KUBESNAKE_E2E_BEACON_IP")); override != "" {
+		return override, nil
+	}
+
+	if primary := primaryHostIP(); primary != "" {
+		return primary, nil
+	}
+
+	gateway, err := k3dNetworkGatewayIP(clusterName)
+	if err != nil {
+		return "", fmt.Errorf("detect k3d gateway: %w", err)
+	}
+
+	return gateway, nil
+}
+
+// primaryHostIP attempts to discover the primary host IP by opening a UDP connection to a well-known
+// address and inspecting the local socket. This avoids platform-specific parsing of routing tables.
+func primaryHostIP() string {
+	// "Connect" a UDP socket to a non-routable documentation address (RFC 5737).
+	// This does not need to send any traffic. It just asks the OS which source IP it
+	// would use for an outbound route, and is read from the local socket address.
+	conn, err := net.Dial("udp", "192.0.2.1:80")
+	if err != nil {
+		return ""
+	}
+	defer conn.Close()
+
+	localAddr := conn.LocalAddr()
+	udpAddr, ok := localAddr.(*net.UDPAddr)
+	if !ok {
+		return ""
+	}
+
+	return udpAddr.IP.String()
+}
+
+// ensureBeaconHostResolves updates CoreDNS to resolve host.k3d.internal to an IP reachable on the host.
+// On macOS, the docker bridge gateway often belongs to the VM hosting Docker rather than the macOS host
+// itself, so dialing the gateway can fail. Prefer a host interface IP (or override) and fall back to the
+// k3d gateway when necessary to keep beacons portable across Linux runners and Apple Silicon Macs.
+func ensureBeaconHostResolves(ctx context.Context, cfg *envconf.Config, clusterName string) error {
+	beaconHostIP, err := detectBeaconHostIP(ctx, clusterName)
+	if err != nil {
+		return err
+	}
+
+	args := KubectlArgs(cfg, "-n", "kube-system", "get", "configmap", "coredns", "-o", "jsonpath={.data.Corefile}")
+	cmd := exec.CommandContext(ctx, "kubectl", args...)
+	corefileRaw, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("read coredns corefile: %w: %s", err, string(corefileRaw))
+	}
+
+	newBlock := fmt.Sprintf(`host.k3d.internal:53 {
+hosts {
+%s host.k3d.internal
+fallthrough
+}
+forward . /etc/resolv.conf
+}
+`, beaconHostIP)
+
+	// Ensure there are blank lines between the existing Corefile and the new block
+	// while avoiding malformed YAML by passing the content via JSON merge patch.
+	updated := strings.TrimSpace(string(corefileRaw)) + "\n\n" + newBlock
+
+	patch := fmt.Sprintf(`{"data":{"Corefile":%q}}`, updated)
+	patchArgs := KubectlArgs(cfg, "-n", "kube-system", "patch", "configmap", "coredns", "--type", "merge", "-p", patch)
+	patchCmd := exec.CommandContext(ctx, "kubectl", patchArgs...)
+	patchOutput, err := patchCmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("update coredns corefile: %w: %s", err, string(patchOutput))
+	}
+
+	// Restart CoreDNS to pick up the new configuration.
+	restartArgs := KubectlArgs(cfg, "-n", "kube-system", "rollout", "restart", "deployment/coredns")
+	restartCmd := exec.CommandContext(ctx, "kubectl", restartArgs...)
+	restartOutput, err := restartCmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("restart coredns: %w: %s", err, string(restartOutput))
+	}
+
+	return nil
+}
+
+// ConfigureBeaconDNSFunc ensures pods can resolve host.k3d.internal to the Docker host.
+func ConfigureBeaconDNSFunc(clusterName string) env.Func {
+	return func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
+		if err := ensureBeaconHostResolves(ctx, cfg, clusterName); err != nil {
+			return ctx, err
+		}
+		return ctx, nil
+	}
+}
+
+// indentLines indents each line in the provided string with the given number of spaces.
+func indentLines(s string, spaces int) string {
+	indent := strings.Repeat(" ", spaces)
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		lines[i] = indent + line
+	}
+
+	return strings.Join(lines, "\n")
+}
+
 // PrepareCluster prepares a cluster for the test environment with setup, teardown, and manifests.
 func PrepareCluster(testenv env.Environment, clusterName string, manifestsDir string, preloadImages []string) {
 	// Check for missing required commands.
@@ -222,6 +350,7 @@ func PrepareCluster(testenv env.Environment, clusterName string, manifestsDir st
 	testenv.Setup(
 		envfuncs.CreateClusterWithOpts(k3d.NewProvider(), clusterName),
 		ConfigureKubectlContext(clusterName),
+		ConfigureBeaconDNSFunc(clusterName),
 	)
 
 	// Queue image preloading (all images in a single k3d command for speed).
