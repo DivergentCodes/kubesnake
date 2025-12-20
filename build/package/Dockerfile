@@ -22,6 +22,6 @@ RUN ./scripts/build.sh
 ###########################################################
 FROM scratch
 
-COPY --from=builder /app/bin/kubesnake /kubesnake
+COPY --from=builder /app/dist/kubesnake /kubesnake
 
 ENTRYPOINT ["/kubesnake"]

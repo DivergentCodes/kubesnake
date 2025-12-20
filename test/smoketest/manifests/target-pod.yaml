@@ -37,7 +37,7 @@ spec:
         - infinity
       env:
         - name: KUBESNAKE_E2E_BEACON_URL
-          value: "http://host.docker.internal:18080/beacon"
+          value: "http://host.k3d.internal:18080/beacon"
       volumeMounts:
         - name: beacons
           mountPath: /var/run/kubesnake/beacon.json
@@ -51,7 +51,7 @@ spec:
         - infinity
       env:
         - name: KUBESNAKE_E2E_BEACON_URL
-          value: "http://host.docker.internal:18080/beacon"
+          value: "http://host.k3d.internal:18080/beacon"
       volumeMounts:
         - name: beacons
           mountPath: /var/run/kubesnake/beacon.json
