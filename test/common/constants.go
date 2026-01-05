@@ -4,7 +4,6 @@ package common
 
 const (
 	// BeaconReceiverPort is the port the beacon receiver listens on.
-	// Must match KUBESNAKE_E2E_BEACON_URL in target-pod.yaml.
 	// Pods reach the host via host.k3d.internal (k3d default host alias).
 	BeaconReceiverPort = 18080
 

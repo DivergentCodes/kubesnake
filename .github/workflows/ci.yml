@@ -2,6 +2,9 @@ name: CI
 
 on:
   pull_request:
+    paths-ignore:
+      - "**/*.md"
+      - ".gitignore"
   workflow_dispatch:
 
 jobs:

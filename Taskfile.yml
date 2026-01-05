@@ -29,6 +29,7 @@ tasks:
 
   test:unit:
     desc: Run tests
+    deps: [prepare:certs]
     cmds:
       - go test -v ./...
 
@@ -47,6 +48,7 @@ tasks:
 
   lint:
     desc: Run linters
+    deps: [prepare:certs]
     cmds:
       - go vet ./...
 
@@ -54,6 +56,11 @@ tasks:
     desc: Format code
     cmds:
       - go fmt ./...
+
+  prepare:certs:
+    desc: Copy system CA bundle for embedding
+    cmds:
+      - ./scripts/copy-certs.sh
 
   tidy:
     desc: Tidy go modules
@@ -119,3 +126,12 @@ tasks:
     desc: Load local kubesnake:dev image into the dev cluster
     cmds:
       - k3d image import {{.IMAGE_TAG}} -c {{.K3D_CLUSTER_NAME}}
+
+  k3d:upload:
+    desc: Upload the kubesnake binary to the dev cluster
+    cmds:
+      - kubectl apply -f test/manual/manifests/basic-execution.yaml
+      - sleep 5
+      - kubectl cp dist/kubesnake-linux-amd64 default/basic-pod:/tmp/kubesnake-amd64
+      - kubectl cp dist/kubesnake-linux-arm64 default/basic-pod:/tmp/kubesnake-arm64
+      - kubectl exec -it -n default basic-pod -- /bin/bash

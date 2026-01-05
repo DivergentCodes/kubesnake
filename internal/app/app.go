@@ -2,54 +2,23 @@
 package app
 
 import (
-	"bytes"
-	"fmt"
-	"net/http"
-	"os"
+	"github.com/DivergentCodes/kubesnake/internal/config"
+	"github.com/DivergentCodes/kubesnake/internal/e2emode"
 )
 
-const (
-	// E2EBeaconURLEnv is the environment variable that enables e2e mode.
-	// When set, kubesnake reads the beacon file and POSTs it to this URL.
-	E2EBeaconURLEnv = "KUBESNAKE_E2E_BEACON_URL"
-
-	// E2EBeaconPath is the canonical path to the beacon file in e2e mode.
-	E2EBeaconPath = "/var/run/kubesnake/beacon.json"
-)
-
-// Run is the main entry point for the kubesnake application.
+// Run is the interface-agnostic entrypoint for running kubesnake.
+// CLI/GUI/etc should call this without the app needing to know about any interface details.
 func Run() error {
-	fmt.Println("KubeSnake ( https://github.com/DivergentCodes/kubesnake )")
-
-	// Check for e2e mode.
-	if beaconURL := os.Getenv(E2EBeaconURLEnv); beaconURL != "" {
-		return runE2EMode(beaconURL)
-	}
-
-	return nil
-}
-
-// runE2EMode reads the beacon file and POSTs it to the given URL.
-func runE2EMode(beaconURL string) error {
-	fmt.Printf("e2e mode: sending beacon to %s\n", beaconURL)
-
-	// Read the beacon file.
-	beacon, err := os.ReadFile(E2EBeaconPath)
+	// Load embedded user configuration (if present).
+	cfg, err := config.LoadEmbeddedConfigFromSelf()
 	if err != nil {
-		return fmt.Errorf("read beacon file: %w", err)
+		return err
 	}
 
-	// POST the beacon to the URL.
-	resp, err := http.Post(beaconURL, "application/json", bytes.NewReader(beacon))
-	if err != nil {
-		return fmt.Errorf("post beacon: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("beacon POST failed: %s", resp.Status)
+	// Check for e2e mode via embedded config.
+	if beaconURL := cfg.E2EBeaconURL(); beaconURL != "" {
+		return e2emode.RunE2EMode(beaconURL)
 	}
 
-	fmt.Println("e2e mode: beacon sent successfully")
 	return nil
 }

@@ -47,10 +47,19 @@ func TestMain(m *testing.M) {
 
 	// Prepare the cluster for the test environment.
 	common.PrepareCluster(testenv, clusterName, manifestsDir, preloadImages)
+
+	// KubeSnake carries its config embedded in the portable binary.
+	// Mirror that in e2e by embedding the config on the host before uploading to the cluster.
+	const embeddedCfg = `{"e2e":{"beaconUrl":"http://host.k3d.internal:18080/beacon"}}`
+
 	testenv.Setup(
 		common.WaitForPodReadyFunc("default", "target-pod", 2*time.Minute),
-		common.CopyKubesnakeBinaryFunc("default", "target-pod", "app", "/tmp/kubesnake"),
-		common.CopyKubesnakeBinaryFunc("default", "target-pod", "sidecar", "/tmp/kubesnake"),
+		common.PrepareKubesnakeBinaryWithEmbeddedConfigFunc([]byte(embeddedCfg)),
+		common.CopyPreparedKubesnakeBinaryToContainersFunc("default", "target-pod", "/tmp/kubesnake", "app", "sidecar"),
+		common.CopyPreparedKubesnakeBinaryToContainersFunc("default", "target-pod", "/tmp/kubesnake", "app", "sidecar"),
+	)
+	testenv.Finish(
+		common.CleanupPreparedKubesnakeBinaryFunc(),
 	)
 
 	// Run Test* functions and exit.
