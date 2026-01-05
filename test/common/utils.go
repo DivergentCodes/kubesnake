@@ -3,6 +3,7 @@ package common
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -23,6 +24,8 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/envfuncs"
 	"sigs.k8s.io/e2e-framework/support/k3d"
+
+	"github.com/DivergentCodes/kubesnake/internal/config"
 )
 
 // CommandAvailable reports whether the binary is on PATH.
@@ -174,24 +177,21 @@ func KubectlCp(ctx context.Context, cfg *envconf.Config, localPath, namespace, p
 	return nil
 }
 
-// CopyKubesnakeBinary copies the appropriate kubesnake binary to a container.
-// It auto-detects the cluster architecture and copies the matching binary.
-func CopyKubesnakeBinary(ctx context.Context, cfg *envconf.Config, namespace, pod, container, remotePath string) error {
-	arch, err := GetNodeArchitecture(ctx, cfg)
-	if err != nil {
-		return fmt.Errorf("detect architecture: %w", err)
+// CopyKubesnakeBinary copies the kubesnake binary from localPath to a container and makes it executable.
+// localPath can point to a plain built binary (e.g. from dist/) or a scratch copy with an embedded config.
+func CopyKubesnakeBinary(ctx context.Context, cfg *envconf.Config, localPath, namespace, pod, container, remotePath string) error {
+	if _, err := os.Stat(localPath); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("binary not found: %s", localPath)
+		}
+		return fmt.Errorf("stat binary: %w", err)
 	}
 
-	binaryPath := ResolveBinaryPath("linux", arch)
-	if _, err := os.Stat(binaryPath); os.IsNotExist(err) {
-		return fmt.Errorf("binary not found: %s (run 'task build' first)", binaryPath)
-	}
-
-	if err := KubectlCp(ctx, cfg, binaryPath, namespace, pod, container, remotePath); err != nil {
+	if err := KubectlCp(ctx, cfg, localPath, namespace, pod, container, remotePath); err != nil {
 		return fmt.Errorf("copy binary to %s/%s:%s: %w", namespace, pod, remotePath, err)
 	}
 
-	// Make executable
+	// Make executable (kubectl cp can strip mode bits depending on transport).
 	output, err := KubectlExec(ctx, cfg, namespace, pod, container, "chmod", "+x", remotePath)
 	if err != nil {
 		return fmt.Errorf("chmod binary: %w: %s", err, string(output))
@@ -200,11 +200,121 @@ func CopyKubesnakeBinary(ctx context.Context, cfg *envconf.Config, namespace, po
 	return nil
 }
 
-// CopyKubesnakeBinaryFunc returns an env.Func that copies the kubesnake binary to a container.
-func CopyKubesnakeBinaryFunc(namespace, pod, container, remotePath string) env.Func {
+// CopyKubesnakeBinaryFunc returns an env.Func that copies the kubesnake binary at localPath to a container.
+func CopyKubesnakeBinaryFunc(localPath, namespace, pod, container, remotePath string) env.Func {
 	return func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
-		if err := CopyKubesnakeBinary(ctx, cfg, namespace, pod, container, remotePath); err != nil {
+		if err := CopyKubesnakeBinary(ctx, cfg, localPath, namespace, pod, container, remotePath); err != nil {
 			return ctx, err
+		}
+		return ctx, nil
+	}
+}
+
+type preparedKubesnakeBinaryPathKey struct{}
+
+// PreparedKubesnakeBinaryPath returns the path to a previously prepared kubesnake binary stored in the
+// e2e context (see PrepareKubesnakeBinaryWithEmbeddedConfigFunc).
+func PreparedKubesnakeBinaryPath(ctx context.Context) (string, bool) {
+	p, ok := ctx.Value(preparedKubesnakeBinaryPathKey{}).(string)
+	if !ok || strings.TrimSpace(p) == "" {
+		return "", false
+	}
+	return p, true
+}
+
+// CopyPreparedKubesnakeBinaryToContainersFunc copies a previously prepared kubesnake binary (stored in
+// the e2e context) into the specified pod containers.
+func CopyPreparedKubesnakeBinaryToContainersFunc(namespace, pod, remotePath string, containers ...string) env.Func {
+	return func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
+		localPath, ok := PreparedKubesnakeBinaryPath(ctx)
+		if !ok {
+			return ctx, fmt.Errorf("prepared kubesnake binary missing from context (did you run PrepareKubesnakeBinaryWithEmbeddedConfigFunc?)")
+		}
+		for _, c := range containers {
+			if strings.TrimSpace(c) == "" {
+				continue
+			}
+			if err := CopyKubesnakeBinary(ctx, cfg, localPath, namespace, pod, c, remotePath); err != nil {
+				return ctx, err
+			}
+		}
+		return ctx, nil
+	}
+}
+
+// PrepareKubesnakeBinaryWithEmbeddedConfig creates a temporary kubesnake binary on the host with the
+// provided embedded JSON config applied for the cluster's architecture.
+//
+// The returned path should be cleaned up by the caller (os.Remove) when done.
+func PrepareKubesnakeBinaryWithEmbeddedConfig(ctx context.Context, cfg *envconf.Config, embeddedConfigJSON []byte) (string, error) {
+	// Validate config is JSON up-front so failures are obvious.
+	var anyJSON any
+	if err := json.Unmarshal(embeddedConfigJSON, &anyJSON); err != nil {
+		return "", fmt.Errorf("invalid embedded config JSON: %w", err)
+	}
+
+	arch, err := GetNodeArchitecture(ctx, cfg)
+	if err != nil {
+		return "", fmt.Errorf("detect architecture: %w", err)
+	}
+
+	baseBinaryPath := ResolveBinaryPath("linux", arch)
+	src, err := os.Open(baseBinaryPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("binary not found: %s (run 'task build' first)", baseBinaryPath)
+		}
+		return "", fmt.Errorf("open base binary: %w", err)
+	}
+	defer src.Close()
+
+	st, err := src.Stat()
+	if err != nil {
+		return "", fmt.Errorf("stat base binary: %w", err)
+	}
+
+	tmp, err := os.CreateTemp("", fmt.Sprintf("kubesnake-%s-embedded-*", arch))
+	if err != nil {
+		return "", fmt.Errorf("create temp binary: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer tmp.Close()
+
+	if err := tmp.Chmod(st.Mode()); err != nil {
+		return "", fmt.Errorf("chmod temp binary: %w", err)
+	}
+	if _, err := io.Copy(tmp, src); err != nil {
+		return "", fmt.Errorf("copy temp binary: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return "", fmt.Errorf("close temp binary: %w", err)
+	}
+
+	if err := config.EmbedConfigDataIntoExecutable(tmpPath, embeddedConfigJSON); err != nil {
+		return "", fmt.Errorf("embed config into temp binary: %w", err)
+	}
+
+	return tmpPath, nil
+}
+
+// PrepareKubesnakeBinaryWithEmbeddedConfigFunc prepares an embedded-config kubesnake binary on the host
+// and stores its path in the e2e context for later steps.
+func PrepareKubesnakeBinaryWithEmbeddedConfigFunc(embeddedConfigJSON []byte) env.Func {
+	return func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
+		p, err := PrepareKubesnakeBinaryWithEmbeddedConfig(ctx, cfg, embeddedConfigJSON)
+		if err != nil {
+			return ctx, err
+		}
+		return context.WithValue(ctx, preparedKubesnakeBinaryPathKey{}, p), nil
+	}
+}
+
+// CleanupPreparedKubesnakeBinaryFunc removes a previously prepared embedded-config kubesnake binary,
+// if present in the context.
+func CleanupPreparedKubesnakeBinaryFunc() env.Func {
+	return func(ctx context.Context, _ *envconf.Config) (context.Context, error) {
+		if p, ok := ctx.Value(preparedKubesnakeBinaryPathKey{}).(string); ok && strings.TrimSpace(p) != "" {
+			_ = os.Remove(p)
 		}
 		return ctx, nil
 	}

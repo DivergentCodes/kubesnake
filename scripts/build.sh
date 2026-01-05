@@ -25,7 +25,8 @@ build() {
     mkdir -p "$(dirname "$outfile")"
 
     CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build \
-        -ldflags "-X main.Version=$VERSION" \
+        -ldflags "-s -w -X main.Version=$VERSION" \
+        -trimpath \
         -o "$outfile" \
         ./cmd/kubesnake \
         || {

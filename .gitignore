@@ -5,6 +5,9 @@
 # Embedded CA certificates copied at build time
 internal/certs/ca-certificates.crt
 
+# Local toolchain installs (never commit)
+.toolchains/
+
 ##########################################################
 # Golang
 ###########################################################

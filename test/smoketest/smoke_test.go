@@ -4,6 +4,8 @@ package smoke
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -98,6 +100,47 @@ func testKubesnakeBeaconsBack(t *testing.T) {
 		builder.Assess(
 			fmt.Sprintf("%s:%s:%s", c.namespace, c.pod, c.container),
 			common.VerifyKubesnakeBeaconsBack(beaconReceiverSvc, c.namespace, c.pod, c.container, c.binaryPath, 30*time.Second),
+		)
+	}
+
+	testenv.Test(t, builder.Feature())
+}
+
+// testEmbeddedConfig verifies that the kubesnake binary can embed a config into itself.
+func testEmbeddedConfig(t *testing.T) {
+	// Create a local config file that we will copy into the target pod.
+	dir := t.TempDir()
+	localCfg := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(localCfg, []byte(`{"e2e":true,"name":"kubesnake"}`), 0o644); err != nil {
+		t.Fatalf("write local config: %v", err)
+	}
+
+	const (
+		namespace  = "default"
+		pod        = "target-pod"
+		binaryPath = "/tmp/kubesnake"
+		remoteCfg  = "/tmp/kubesnake-config.json"
+	)
+
+	checks := []struct {
+		container string
+	}{
+		{"app"},
+		{"sidecar"},
+	}
+
+	builder := features.New("embedded config")
+	for _, c := range checks {
+		key := namespace + ":" + pod + ":" + c.container
+
+		builder.Assess(key+" copy config",
+			common.CopyFileToContainer(localCfg, namespace, pod, c.container, remoteCfg),
+		)
+		builder.Assess(key+" embed config",
+			common.VerifyKubesnakeEmbedsConfig(namespace, pod, c.container, binaryPath, remoteCfg),
+		)
+		builder.Assess(key+" run with embedded config",
+			common.VerifyKubesnakeRunsWithoutBeaconEnv(namespace, pod, c.container, binaryPath),
 		)
 	}
 
